@@ -1,0 +1,31 @@
+services:
+  api:
+    build: .
+    container_name: omnichannel_api
+    restart: always
+    env_file: .env
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    networks:
+      - omnichannel
+
+  redis:
+    image: redis:7.2
+    container_name: omnichannel_redis
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - omnichannel
+
+volumes:
+  redis_data:
+
+networks:
+  omnichannel:
+    driver: bridge
