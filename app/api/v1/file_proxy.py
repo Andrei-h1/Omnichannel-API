@@ -1,31 +1,34 @@
 # file: app/api/v1/file_proxy.py
 
+"""
+Este módulo existia para servir arquivos locais temporários
+para o Chatwoot, mas isso não é mais necessário.
+
+Agora toda mídia é enviada diretamente ao Cloudflare R2,
+que fornece URLs permanentes e públicas.
+
+Portanto, este endpoint é mantido apenas para compatibilidade,
+mas sempre retorna 410 (Gone).
+"""
+
 import logging
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
-
-from app.utils.file_proxy import (
-    get_local_file_path,
-    clean_expired_files
-)
 
 router = APIRouter()
 logger = logging.getLogger("file_proxy_api")
 
 
 @router.get("/{file_id}")
-async def serve_file(file_id: str):
+async def deprecated_file_proxy(file_id: str):
     """
-    Exponibiliza arquivos temporários.
-    Exemplo: GET /v1/files/<file_id>
+    Endpoint desativado — o proxy de arquivos local não é mais utilizado.
     """
-    print("🔥 CHEGOU REQUISIÇÃO CHATWOOT")
+    logger.warning(
+        f"[FILE_PROXY] Chamada recebida para file_id={file_id}, "
+        "mas o sistema de arquivos local foi desativado."
+    )
 
-    # Remove arquivos vencidos
-    clean_expired_files()
-
-    path = get_local_file_path(file_id)
-    if not path:
-        raise HTTPException(status_code=404, detail="file_not_found")
-    
-    return FileResponse(path)
+    raise HTTPException(
+        status_code=410,
+        detail="Este endpoint foi desativado. Mídias agora são servidas diretamente via Cloudflare R2."
+    )

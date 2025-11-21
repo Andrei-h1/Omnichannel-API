@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Tuple
 import aiohttp
 
 from app.core.settings import settings
+from app.core.redis import cache_get, cache_set  # ← usamos só isso
 
 logger = logging.getLogger("chatwoot_service")
 logger.setLevel(logging.INFO)
@@ -35,7 +36,9 @@ class ChatwootClient:
     def __init__(self) -> None:
         self.base_url = settings.CHATWOOT_BASE_URL.rstrip("/")
         self.api_key = settings.CHATWOOT_API_KEY
-        self._conv_cache: dict[str, tuple[str | None, str | None]] = {}
+
+        # REMOVIDO: cache em memória (problemático)
+        # self._conv_cache = {}
 
         self.timeout = aiohttp.ClientTimeout(total=15)
 
@@ -208,7 +211,7 @@ class ChatwootClient:
             return None
 
     # =======================================
-    # Garantir contato + conversa
+    # Garantir contato + conversa (agora usando Redis persistente)
     # =======================================
     async def ensure_contact_and_conversation(
         self,
@@ -217,28 +220,36 @@ class ChatwootClient:
         name: str
     ) -> Tuple[str | None, str | None]:
 
-        cache_key = f"{inbox_identifier}:{phone}"
+        key_contact = f"cw:contact:{inbox_identifier}:{phone}"
+        key_conv = f"cw:conversation:{inbox_identifier}:{phone}"
 
-        if cache_key in self._conv_cache:
-            c1, c2 = self._conv_cache[cache_key]
-            if c1 and c2:
-                logger.info(f"[CW] Cache hit contact={c1} conv={c2}")
-                return c1, c2
+        # 1) Tenta recuperar do Redis
+        cached_contact = await cache_get(key_contact)
+        cached_conv = await cache_get(key_conv)
 
-        logger.info(f"[CW] ensure_contact_and_conversation inbox={inbox_identifier} phone={phone}")
+        if cached_contact and cached_conv:
+            logger.info(f"[CW] Cache HIT contact={cached_contact} conv={cached_conv}")
+            return cached_contact, cached_conv
 
+        logger.info(f"[CW] Cache MISS — criando/obtendo contato e conversa para {phone}")
+
+        # 2) Criar ou obter contato
         contact_identifier = await self.create_contact(inbox_identifier, phone, name)
         if not contact_identifier:
-            logger.error("[CW] Falha ao garantir contato, abortando")
+            logger.error("[CW] Falha ao criar contato")
             return None, None
 
+        # 3) Buscar conversa aberta ou criar nova
         conv_id = await self.get_open_conversation(inbox_identifier, contact_identifier)
-
         if not conv_id:
-            logger.info("[CW] Nenhuma conversa aberta, criando nova")
             conv_id = await self.create_conversation(inbox_identifier, contact_identifier)
 
-        self._conv_cache[cache_key] = (contact_identifier, conv_id)
+        # 4) Salvar no Redis (TTL = 30 dias)
+        ttl = 60 * 60 * 24 * 30
+        await cache_set(key_contact, contact_identifier, ttl_seconds=ttl)
+        await cache_set(key_conv, conv_id, ttl_seconds=ttl)
+
+        logger.info(f"[CW] IDs salvos no Redis contact={contact_identifier} conv={conv_id}")
 
         return contact_identifier, conv_id
 
@@ -346,6 +357,7 @@ class ChatwootClient:
             logger.warning("[CW] Payload sem telefone, ignorando")
             return {"ignored": True, "reason": "missing_phone"}
 
+        # Agora com Redis: SEMPRE recupera a conversa correta mesmo após reboot
         contact_identifier, conversation_id = await self.ensure_contact_and_conversation(
             inbox_identifier,
             phone,
