@@ -97,10 +97,18 @@ def _phone_to_zapi(phone: str | None) -> str | None:
 # ============================================================
 # MEDIA HANDLER (R2)
 # ============================================================
+def fix_chatwoot_active_storage_url(url: str) -> str:
+    """
+    Converte URLs de /blobs/redirect/ para /disk/, que são diretas e baixáveis.
+    """
+    if "/blobs/redirect/" in url:
+        return url.replace("/blobs/redirect/", "/disk/")
+    return url
+
 async def _prepare_media_for_zapi(att: dict) -> tuple[str, str] | None:
     print("⚪ Entrou no _prepare_media_for_zapi")
 
-    data_url = att.get("data_url")
+    data_url = fix_chatwoot_active_storage_url(att.get("data_url"))
     if not data_url:
         logger.warning("⚠️ [CW->ZAPI] attachment sem data_url")
         return None
