@@ -16,27 +16,35 @@ from app.utils.file_proxy import download_and_push_to_r2
 
 router = APIRouter()
 logger = logging.getLogger("webhooks_zapi")
-logger.setLevel(logging.INFO)
 
 
-# ----------------------------------------------------------
+# ============================================================
 # Utils
-# ----------------------------------------------------------
-def _normalize_phone(p: str | None) -> str | None:
-    if not p:
-        return None
-    p = "".join(filter(str.isdigit, str(p)))
-    if not p.startswith("+"):
-        p = "+" + p
-    return p
+# ============================================================
+
+def _extract_contact_identifier(payload: dict) -> tuple[str, str]:
+    """
+    Retorna:
+    - contact_identifier (grupo ou pessoa)
+    - contact_name
+    """
+
+    if payload.get("isGroup"):
+        # GRUPO
+        contact_identifier = payload.get("phone")                 # ex: "12036....-group"
+        contact_name = payload.get("chatName") or "Grupo WhatsApp"
+    else:
+        # INDIVIDUAL
+        raw_phone = payload.get("phone")
+        digits = "".join(filter(str.isdigit, raw_phone or ""))
+
+        contact_identifier = f"+{digits}"
+        contact_name = payload.get("senderName") or contact_identifier
+
+    return contact_identifier, contact_name
 
 
-def _extract_phone(payload: dict) -> str | None:
-    phone = payload.get("participantPhone") if payload.get("isGroup") else payload.get("phone")
-    return _normalize_phone(phone)
-
-
-def _detect_message_type(payload: dict) -> str:
+def _detect_msg_type(payload: dict) -> str:
     if payload.get("text", {}).get("message"):
         return "text"
     if payload.get("image"):
@@ -54,6 +62,7 @@ def _extract_media_url(payload: dict, msg_type: str) -> str | None:
     obj = payload.get(msg_type)
     if not obj:
         return None
+
     return obj.get({
         "image": "imageUrl",
         "video": "videoUrl",
@@ -62,15 +71,16 @@ def _extract_media_url(payload: dict, msg_type: str) -> str | None:
     }.get(msg_type, ""))
 
 
-# ----------------------------------------------------------
+# ============================================================
 # WEBHOOK PRINCIPAL
-# ----------------------------------------------------------
+# ============================================================
+
 @router.post("")
 async def zapi_webhook(payload: dict, db: Session = Depends(get_db)):
 
-    logger.info("=== DEBUG ZAPI WEBHOOK IN ===")
-    logger.info(payload)
-    logger.info("=== END ===")
+    print("\n\n========== ZAPI WEBHOOK RECEBIDO ==========")
+    print(payload)
+    print("===========================================\n\n")
 
     if payload.get("type") not in ("ReceivedCallback", "SentCallback", None):
         return {"ignored": True}
@@ -83,89 +93,91 @@ async def zapi_webhook(payload: dict, db: Session = Depends(get_db)):
     if not vendor:
         return {"ignored": True, "reason": "vendor_not_found"}
 
-    phone = _extract_phone(payload)
-    if not phone:
-        return {"ignored": True, "reason": "missing_phone"}
+    # =====================================================
+    # IDENTIFICADOR DO GRUPO OU INDIVIDUAL
+    # =====================================================
+    contact_identifier, contact_name = _extract_contact_identifier(payload)
 
+    if not contact_identifier:
+        return {"ignored": True, "reason": "missing_contact_identifier"}
+
+    # Criar conversa interna
     conversation = ensure_conversation(
         db,
-        phone=phone,
+        phone=contact_identifier,
         vendor_id=vendor.vendor_id,
     )
 
-    zapi_lid = payload.get("chatLid") or payload.get("participantLid") or ""
+    # Session
     session = ensure_session(
         db,
         conversation_id=conversation.conversation_id,
         vendor_id=vendor.vendor_id,
-        zapi_lid=zapi_lid,
-        chatwoot_conv_id="",  
+        zapi_lid=payload.get("participantLid") or "",
+        chatwoot_conv_id="",
     )
 
-    msg_type = _detect_message_type(payload)
-    content = payload.get("text", {}).get("message")
-
-    if msg_type == "unknown":
-        return {"ignored": True}
+    msg_type = _detect_msg_type(payload)
+    message_text = payload.get("text", {}).get("message")
 
     # =====================================================
-    #      MÍDIA → download → upload no R2 → enviar
+    # ENVIAR PARA CHATWOOT
     # =====================================================
     try:
         inbox_identifier = vendor.inbox_identifier
 
+        # → TEXT
         if msg_type == "text":
             result = await chatwoot_client.send_from_zapi_payload(
                 payload,
                 inbox_identifier
             )
 
+        # → MEDIA
         else:
-            # 1) pega url original
             media_url = _extract_media_url(payload, msg_type)
             if not media_url:
                 return {"ignored": True, "reason": "missing_media_url"}
 
-            logger.info(f"[ZAPI] Baixando mídia original: {media_url}")
+            # --- CORREÇÃO AQUI: Capturar a legenda original da mídia ---
+            original_media_data = payload.get(msg_type, {})
+            original_caption = original_media_data.get("caption") or ""
+            # -----------------------------------------------------------
 
-            # 2) download → upload no R2
             r2_url, mime = await download_and_push_to_r2(media_url)
 
-            logger.info(f"[ZAPI] Mídia enviada ao R2: {r2_url}")
-
-            # 3) monta novo payload para o Chatwoot
             patched = payload.copy()
-
+            
             if msg_type == "image":
                 patched["image"] = {
                     "imageUrl": r2_url,
-                    "caption": payload.get("image", {}).get("caption", "")
+                    "caption": original_caption  # <--- Usando a variável correta
                 }
             elif msg_type == "video":
                 patched["video"] = {
                     "videoUrl": r2_url,
-                    "caption": payload.get("video", {}).get("caption", "")
+                    "caption": original_caption  # <--- Serve para vídeo também
                 }
             elif msg_type == "audio":
-                patched["audio"] = {"audioUrl": r2_url}
+                patched["audio"] = {"audioUrl": r2_url} # Áudio geralmente não tem caption, ok
             elif msg_type == "document":
                 patched["document"] = {
                     "documentUrl": r2_url,
-                    "mimeType": mime
+                    "mimeType": mime,
+                    "caption": original_caption # Documento as vezes tem caption
                 }
 
-            # 4) envia ao Chatwoot
             result = await chatwoot_client.send_from_zapi_payload(
                 patched,
                 inbox_identifier
             )
 
-        logger.info(f"[ZAPI->CW] Resultado: {result}")
-
-    except ChatwootError as e:
+    except ChatwootError:
         raise HTTPException(status_code=500, detail="failed_to_forward_to_chatwoot")
 
-    # LOG
+    # =====================================================
+    # LOG INTERNO
+    # =====================================================
     msg_log = MessageLogCreate(
         conversation_id=conversation.conversation_id,
         session_id=session.session_id,
@@ -173,14 +185,12 @@ async def zapi_webhook(payload: dict, db: Session = Depends(get_db)):
         direction="incoming",
         source="zapi",
         message_type=msg_type,
-        content=content,
+        content=payload.get("text", {}).get("message") or "",
     )
     log_message(db, msg_log)
 
     return {
         "status": "ok",
-        "vendor_id": vendor.vendor_id,
         "conversation_id": conversation.conversation_id,
-        "session_id": session.session_id,
-        "forward_result": result,
+        "result": result,
     }
