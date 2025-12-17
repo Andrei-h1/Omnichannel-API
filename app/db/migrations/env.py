@@ -1,24 +1,29 @@
 import sys
 import os
 
+# Adiciona raiz do projeto ao PYTHONPATH
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 from logging.config import fileConfig
 
 from alembic import context
+
+# Importa o engine oficial do projeto
 from app.db.session import engine
-from app.db import base
 
-from app.models import vendors, conversations, conversation_sessions, messages_log
+# Importa Base e o registry (importa todos modelos)
+from app.db.base import Base
+from app.db import models_registry  # necessário para registrar todos os models
 
+# Config do Alembic
 config = context.config
 
 # Logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Autogenerate metadata
-target_metadata = base.Base.metadata
+# Metadata alvo das migrações
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
@@ -37,7 +42,6 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    # usamos o engine configurado no projeto (SQLite ou Postgres)
     with engine.connect() as connection:
         context.configure(
             connection=connection,

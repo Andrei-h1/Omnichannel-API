@@ -9,7 +9,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
+      - ./omnichannel.db:/app/omnichannel.db  
+      - ./data:/app/data                      
     networks:
       - omnichannel
 

@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     R2_SECRET_ACCESS_KEY: str = "1a6a681e57704fa5eb347dbf8b888716753e2d92352af2558bb48c4c3eb3abb9"
     R2_PUBLIC_URL: str ="https://pub-bcf5d9058db24b4ca15b08c02cf24317.r2.dev"
 
-    REDIS_HOST: str = "omnichannel_redis"
+    REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: str | None = None
 
