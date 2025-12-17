@@ -11,3 +11,4 @@ redis
 aiofiles
 aiohttp
 boto3
+duckdb
